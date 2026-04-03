@@ -121,7 +121,7 @@ when fsAsyncSupport:
   template disconnectOutputDevice(s: AsyncOutputStream) =
     disconnectOutputDevice OutputStream(s)
 
-template prepareSpan(s: OutputStream, minLen: int) =
+template prepareSpan(s: OutputStream, minLen: int = 1) =
   s.span = s.buffers.prepare(s.buffers.nextAlignedSize(minLen))
 
   # Count the full span so that when span.len decreases as data gets written,
