@@ -161,11 +161,41 @@ elif asyncBackend == "nginx":
 
     # Check if return type is already Future[T]
     var alreadyFuture = false
+    var innerType: NimNode = nil
     if retType.kind == nnkBracketExpr and retType[0].eqIdent("Future"):
       alreadyFuture = true
+      innerType = retType[1]
 
-    if not alreadyFuture:
-      # Set return type to Future[void]
+    if alreadyFuture:
+      if innerType.eqIdent("void"):
+        # Future[void]: keep return type, wrap body to return completed future
+        let origBody = prc.body
+        let futSym = genSym(nskLet, "fut")
+        prc.body = quote do:
+          `origBody`
+          let `futSym` = newFuture[void]("async")
+          `futSym`.complete()
+          return `futSym`
+      else:
+        # Future[T]: change result type so `result` is T inside the body,
+        # then wrap to return a completed Future[T].
+        # This mirrors what chronos/asyncdispatch do: inside an async proc
+        # returning Future[T], `result` has type T and `await` unwraps futures.
+        let origBody = prc.body
+        let futSym = genSym(nskLet, "fut")
+        let resSym = genSym(nskLet, "res")
+        let futType = retType  # Future[T]
+        let valType = innerType  # T
+        prc.body = quote do:
+          let `resSym` = block:
+            var result: `valType`
+            `origBody`
+            result
+          let `futSym` = newFuture[`valType`]("async")
+          `futSym`.complete(`resSym`)
+          return `futSym`
+    else:
+      # No return type or void: set return type to Future[void]
       if retType.kind == nnkEmpty or
          (retType.kind == nnkIdent and retType.eqIdent("void")):
         params[0] = nnkBracketExpr.newTree(ident"Future", ident"void")
