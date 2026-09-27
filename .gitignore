@@ -3,3 +3,16 @@ nimcache/
 nimble.develop
 nimble.paths
 build/
+
+# Compiled test executables.
+#
+# `nimble test` builds into `build/` (see faststreams.nimble: `--outdir:build`),
+# but a bare `nim c -r tests/foo.nim` drops the executable next to its source.
+# Two were committed that way -- `tests/test_outputs` (1,137,856 B) and
+# `tests/test_nginx_adapter` (1,295,128 B). Both linked an absolute
+# `/nix/store/jms7zxzm7w1whczwny5m3gkgdjghmi2r-glibc-2.42-51/lib/ld-linux-x86-64.so.2`
+# interpreter, so they ran only on the machine that produced them, and nothing
+# in the tree referenced either path.
+tests/test_*
+!tests/test_*.nim
+!tests/test_*.nim.cfg
