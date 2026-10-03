@@ -814,7 +814,7 @@ when fsAsyncSupport:
     proc flushAsync*(s: AsyncOutputStream) {.async.} =
       flush s
 
-    proc close*(sp: AsyncOutputStream) =
+    template close*(sp: AsyncOutputStream) =
       let s = OutputStream sp
       if s != nil:
         flush(Async s)
