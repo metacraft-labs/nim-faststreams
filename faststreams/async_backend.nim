@@ -28,7 +28,7 @@ elif asyncBackend == "chronos":
   export
     chronos
 
-  template fsAwait*(f: Future): untyped =
+  template fsAwait*(f: untyped): untyped =
     await f
 
 elif asyncBackend == "asyncdispatch":

@@ -1,3 +1,8 @@
+# The async lifecycle fixture uses the real public output-device extension
+# interface as an in-memory sink, with real Chronos futures and scheduler.
+# This controlled device exposes exact write/close order and close failure;
+# no scheduler, stream implementation or future is mocked.
+
 {.used.}
 
 import
@@ -668,3 +673,60 @@ suite "output api":
 
     check:
       tmp == []
+
+when fsAsyncSupport:
+  # No mock scheduler/futures: the public output-device extension interface
+  # supplies a real in-memory sink and real Chronos futures. This isolates the
+  # lifecycle contract from filesystem buffering while exercising async close.
+  type LifecycleOutput = ref object of OutputStream
+    received: string
+    lifecycle: seq[string]
+    rejectClose: bool
+
+  proc lifecycleWrite(s: OutputStream, src: pointer, len: Natural): Future[void] {.nimcall, gcsafe, raises: [IOError].} =
+    let sink = LifecycleOutput(s)
+    sink.lifecycle.add "write"
+    # The device contract receives nil/zero to flush queued PageBuffers.
+    while sink.buffers.consumable() > 0:
+      var page = sink.buffers.consume()
+      for value in page.data():
+        sink.received.add char(value)
+    let data = cast[ptr UncheckedArray[byte]](src)
+    for i in 0 ..< len:
+      sink.received.add char(data[i])
+    result = newFuture[void]("lifecycleWrite")
+    result.complete()
+
+  proc lifecycleClose(s: OutputStream): Future[void] {.nimcall, gcsafe, raises: [IOError].} =
+    let sink = LifecycleOutput(s)
+    sink.lifecycle.add "close"
+    result = newFuture[void]("lifecycleClose")
+    if sink.rejectClose:
+      result.fail(newException(IOError, "real close failure"))
+    else:
+      result.complete()
+
+  var lifecycleVtable = OutputStreamVTable(
+    writeAsync: lifecycleWrite, closeAsync: lifecycleClose)
+
+  proc runLifecycle(rejectClose: bool): Future[void] {.async.} =
+    let sink = LifecycleOutput(vtable: addr lifecycleVtable,
+      buffers: PageBuffers.init(64), rejectClose: rejectClose)
+    sink.buffers.write(bytes("buffered payload"))
+    check sink.received == ""
+    var caught = false
+    try:
+      close(Async(sink))
+    except IOError as error:
+      caught = true
+      check error.msg == "real close failure"
+    check caught == rejectClose
+    check sink.received == "buffered payload"
+    check sink.lifecycle == @["write", "close"]
+    check sink.vtable == nil
+
+  suite "asynchronous output close lifecycle":
+    test "flush precedes exactly one device close":
+      waitFor runLifecycle(false)
+    test "a rejected device close reaches the caller":
+      waitFor runLifecycle(true)

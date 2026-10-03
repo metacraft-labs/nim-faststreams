@@ -4,6 +4,7 @@ on:
     branches:
       - master
   pull_request:
+    branches-ignore: [agents]
   workflow_dispatch:
 
 jobs:
@@ -13,4 +14,4 @@ jobs:
       test-command: |
         env NIMLANG=c nimble test
         nimble install chronos
-        env NIMLANG=c nimble testChronos || true
+        env NIMLANG=c nimble testChronos

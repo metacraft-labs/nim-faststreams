@@ -1,3 +1,7 @@
+# The seeded-pipe regression uses real PageBuffers, pipeInput and Chronos
+# scheduler/futures; no mocks or replacement scheduler are used. It checks
+# the public device/buffer boundary without filesystem timing dependencies.
+
 {.used.}
 
 import
@@ -45,13 +49,12 @@ when fsAsyncSupport:
     timerVar = int64(getTicks() - t0) div 1000000
 
   proc getOutput(sp: AsyncInputStream, T: type string): Future[string] {.async.} =
-    # this proc is a quick hack to let the test pass
-    # do not use it in production code
+    # Read real stream bytes into owned string storage; managed seq and
+    # string representations are not interchangeable.
     let size = sp.totalUnconsumedBytes()
     if size > 0:
-      var data = newSeq[byte](size)
-      discard sp.readInto(data)
-      result = cast[string](data)
+      result = newString(size)
+      doAssert sp.readInto(result.toOpenArrayByte(0, size - 1))
 
   suite "pipelines":
     const loremIpsum = """
@@ -135,3 +138,52 @@ when fsAsyncSupport:
 else:
   test "pipelines":
     skip
+
+when fsAsyncSupport:
+  proc seededPipeRoundtrip(): Future[void] {.async.} =
+    let buffers = PageBuffers.init(64)
+    let payload = @[byte 0x11, 0x22, 0x33, 0x44, 0x55]
+    buffers.write(payload)
+    let producer = pipeOutput(buffers)
+    close(producer)
+    let input = pipeInput(buffers)
+    try:
+      var actual: seq[byte]
+      while input.readable:
+        actual.add input.read()
+      check actual == payload
+    finally:
+      close(input)
+
+  suite "seeded asynchronous pipe":
+    test "initial readable bytes survive construction and close":
+      waitFor seededPipeRoundtrip()
+
+const asyncBackend {.strdefine.} = "none"
+
+when asyncBackend == "chronos":
+  proc awaitingGroup(futures: seq[Future[void]]): Future[void] {.async.} =
+    fsAwait allFutures(futures)
+
+  proc raisesAwareStep(fail: bool): Future[int] {.async: (raises: [IOError]).} =
+    if fail:
+      raise newException(IOError, "raises-aware failure")
+    return 23
+
+  proc awaitingRaisesAware(fail: bool): Future[int] {.async.} =
+    return fsAwait raisesAwareStep(fail)
+
+  suite "Chronos raises-aware await delegation":
+    test "allFutures completes through the wrapper":
+      let completed = newFuture[void]("completed group member")
+      completed.complete()
+      waitFor awaitingGroup(@[completed])
+    test "cancellation reaches the wrapper caller":
+      let pending = newFuture[void]("pending group member")
+      let joined = awaitingGroup(@[pending])
+      waitFor joined.cancelAndWait()
+      check joined.cancelled()
+    test "typed result and error reach the wrapper caller":
+      check waitFor(awaitingRaisesAware(false)) == 23
+      expect IOError:
+        discard waitFor awaitingRaisesAware(true)
